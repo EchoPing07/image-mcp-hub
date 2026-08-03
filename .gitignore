@@ -1,0 +1,10 @@
+# build output
+*.exe
+/image-mcp-hub
+
+# runtime data
+config.json
+/data/
+
+# editor
+.obsidian/
