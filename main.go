@@ -45,13 +45,19 @@ func main() {
 	mcpSvc := mcpserver.New(cfgMgr, store, st)
 	adminSvc := admin.New(cfgMgr, store, st)
 
-	// Periodic cleanup using the live (hot-reloadable) retention rules.
+	// Periodic cleanup using the live (hot-reloadable) retention rules, and
+	// prune stats for models that no longer exist in the config.
 	go func() {
 		t := time.NewTicker(time.Minute)
 		defer t.Stop()
 		for range t.C {
 			c := cfgMgr.Get()
 			store.Clean(c.Storage.MaxAgeDays, c.Storage.MaxCount)
+			names := make([]string, 0, len(c.Models))
+			for _, m := range c.Models {
+				names = append(names, m.Name)
+			}
+			st.PruneModels(names)
 		}
 	}()
 
@@ -62,6 +68,18 @@ func main() {
 		for range t.C {
 			if err := st.Save(); err != nil {
 				log.Printf("stats: save failed: %v", err)
+			}
+		}
+	}()
+
+	// Periodically persist advanced key cursors (lazy in NextKey) so rotation
+	// survives restarts without rewriting the whole config on every call.
+	go func() {
+		t := time.NewTicker(5 * time.Second)
+		defer t.Stop()
+		for range t.C {
+			if err := cfgMgr.Flush(); err != nil {
+				log.Printf("config: flush failed: %v", err)
 			}
 		}
 	}()
@@ -105,6 +123,7 @@ func main() {
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 	<-stop
 	log.Printf("shutting down...")
+	_ = cfgMgr.Flush()
 	_ = st.Save()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

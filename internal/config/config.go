@@ -61,6 +61,7 @@ type Manager struct {
 	mu       sync.RWMutex
 	path     string
 	cfg      *Config
+	dirty    bool // advanced key cursors not yet persisted
 	onChange []func(*Config)
 }
 
@@ -119,8 +120,9 @@ func writeFile(path string, cfg *Config) error {
 			return err
 		}
 	}
+	// 0o600: config.json holds plaintext api keys, mcp token and admin password.
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return err
 	}
 	return os.Rename(tmp, path)
@@ -150,25 +152,86 @@ func (m *Manager) OnChange(fn func(*Config)) {
 	m.mu.Unlock()
 }
 
-// Reload replaces the live config, persists it, and fires listeners.
-func (m *Manager) Reload(cfg *Config) error {
-	cfg.applyDefaults()
-	if err := writeFile(m.path, cfg); err != nil {
+// persistLocked writes m.cfg to disk and clears the dirty flag. Caller holds m.mu.
+func (m *Manager) persistLocked() error {
+	if err := writeFile(m.path, m.cfg); err != nil {
 		return err
 	}
+	m.dirty = false
+	return nil
+}
+
+// Reload replaces the live config, persists it, and fires listeners. On persist
+// failure the previous config is restored so memory and disk stay consistent.
+// Listeners receive a clone snapshot, not the live pointer.
+func (m *Manager) Reload(cfg *Config) error {
+	cfg.applyDefaults()
 	m.mu.Lock()
+	old := m.cfg
 	m.cfg = cfg
+	if err := m.persistLocked(); err != nil {
+		m.cfg = old
+		m.mu.Unlock()
+		return err
+	}
+	snapshot := cfg.clone()
 	listeners := append([]func(*Config){}, m.onChange...)
 	m.mu.Unlock()
 	for _, fn := range listeners {
-		fn(cfg)
+		fn(snapshot)
+	}
+	return nil
+}
+
+// Update applies fn to the live config under the write lock and persists the
+// result atomically. On any error from fn or from persist, the prior config is
+// restored, so concurrent NextKey rotations and admin edits can never clobber
+// each other (the lost-update race the old Get→mutate→Reload path had).
+// Listeners receive a clone snapshot.
+func (m *Manager) Update(fn func(*Config) error) error {
+	m.mu.Lock()
+	snapshot := m.cfg.clone()
+	if err := fn(m.cfg); err != nil {
+		m.cfg = snapshot
+		m.mu.Unlock()
+		return err
+	}
+	if err := m.persistLocked(); err != nil {
+		m.cfg = snapshot
+		m.mu.Unlock()
+		return err
+	}
+	listeners := append([]func(*Config){}, m.onChange...)
+	clone := m.cfg.clone()
+	m.mu.Unlock()
+	for _, fn := range listeners {
+		fn(clone)
+	}
+	return nil
+}
+
+// Flush persists any pending (dirty) state, primarily advanced key cursors from
+// NextKey. It is driven by a periodic ticker and on shutdown so NextKey can
+// stay O(1) and free of disk I/O while still surviving restarts. Safe to call
+// concurrently and a no-op when clean.
+func (m *Manager) Flush() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.dirty {
+		return nil
+	}
+	if err := m.persistLocked(); err != nil {
+		log.Printf("config: persist failed: %v", err)
+		return err
 	}
 	return nil
 }
 
 // NextKey returns the next API key for modelName (round-robin) and advances
-// the persisted cursor. Best-effort persistence: rotation always happens in
-// memory; a write failure is logged but does not block the call.
+// the in-memory cursor. The cursor is persisted lazily by Flush rather than on
+// every call, so a single generation no longer rewrites the whole config (and
+// its plaintext keys) to disk. On a hard crash at most one flush window of
+// rotation is lost; on graceful shutdown Flush is called before exit.
 func (m *Manager) NextKey(modelName string) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -183,9 +246,7 @@ func (m *Manager) NextKey(modelName string) (string, error) {
 		idx := mm.KeyIndex % len(mm.APIKeys)
 		key := mm.APIKeys[idx]
 		mm.KeyIndex = (idx + 1) % len(mm.APIKeys)
-		if err := writeFile(m.path, m.cfg); err != nil {
-			log.Printf("config: persist key_index for %s failed: %v", modelName, err)
-		}
+		m.dirty = true
 		return key, nil
 	}
 	return "", fmt.Errorf("model %q not found", modelName)

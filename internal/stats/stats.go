@@ -158,9 +158,11 @@ func (s *Stats) Record(rec CallRecord) {
 		Images:     rec.Images,
 		Error:      rec.Error,
 	}
-	s.recent = append([]RecentCall{rc}, s.recent...)
+	// Append in chronological order (oldest first) and trim the oldest when over
+	// capacity — O(1) amortized instead of rebuilding the whole slice per call.
+	s.recent = append(s.recent, rc)
 	if len(s.recent) > maxRecent {
-		s.recent = s.recent[:maxRecent]
+		s.recent = s.recent[len(s.recent)-maxRecent:]
 	}
 }
 
@@ -194,7 +196,12 @@ func (s *Stats) Snapshot() *Snapshot {
 		snap.Daily = append(snap.Daily, d)
 	}
 
-	snap.Recent = append([]RecentCall(nil), s.recent...)
+	// s.recent is stored oldest-first; expose newest-first for the activity list.
+	recent := make([]RecentCall, len(s.recent))
+	for i, v := range s.recent {
+		recent[len(s.recent)-1-i] = v
+	}
+	snap.Recent = recent
 	return snap
 }
 
@@ -205,6 +212,7 @@ func (s *Stats) Save() error {
 	if !s.dirty {
 		return nil
 	}
+	s.pruneDailyLocked()
 	if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
 		return err
 	}
@@ -222,4 +230,37 @@ func (s *Stats) Save() error {
 	}
 	s.dirty = false
 	return nil
+}
+
+// pruneDailyLocked drops daily buckets older than dailyDays so the map can't
+// grow without bound over months/years. Caller holds s.mu.
+func (s *Stats) pruneDailyLocked() {
+	cutoff := time.Now().AddDate(0, 0, -dailyDays).Format("2006-01-02")
+	for k := range s.daily {
+		if k < cutoff {
+			delete(s.daily, k)
+		}
+	}
+}
+
+// PruneModels drops per-model counters for models no longer in the config, so
+// deleted models don't leak memory forever. keep is the set of live model
+// names. Safe to call concurrently.
+func (s *Stats) PruneModels(keep []string) {
+	keepSet := make(map[string]bool, len(keep))
+	for _, n := range keep {
+		keepSet[n] = true
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	changed := false
+	for name := range s.models {
+		if !keepSet[name] {
+			delete(s.models, name)
+			changed = true
+		}
+	}
+	if changed {
+		s.dirty = true
+	}
 }

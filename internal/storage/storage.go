@@ -3,6 +3,7 @@ package storage
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -57,7 +58,12 @@ func (s *Storage) Save(data []byte, ext string, meta Meta) (filename, urlPath st
 		meta.Time = time.Now()
 	}
 	metaBytes, _ := json.MarshalIndent(meta, "", "  ")
-	_ = os.WriteFile(filepath.Join(s.dir, name+".meta.json"), metaBytes, 0o644)
+	if err := os.WriteFile(filepath.Join(s.dir, name+".meta.json"), metaBytes, 0o644); err != nil {
+		// The image itself is saved and usable; a missing sidecar just means
+		// the admin browser won't show prompt/params for this image. Log so
+		// the failure isn't silently swallowed.
+		log.Printf("storage: write meta for %s failed: %v", name, err)
+	}
 	return name, "/images/" + name, nil
 }
 
@@ -126,8 +132,8 @@ func (s *Storage) Delete(name string) error {
 }
 
 // Clean applies the two independent retention rules. A file is deleted if it
-// exceeds maxAgeDays OR falls outside the newest maxCount. A zero value for a
-// rule disables that rule; both zero keeps everything.
+// is at least maxAgeDays old OR falls outside the newest maxCount. A zero
+// value for a rule disables that rule; both zero keeps everything.
 func (s *Storage) Clean(maxAgeDays, maxCount int) {
 	entries, err := os.ReadDir(s.dir)
 	if err != nil {
@@ -156,11 +162,29 @@ func (s *Storage) Clean(maxAgeDays, maxCount int) {
 	// newest first
 	sort.Slice(imgs, func(i, j int) bool { return imgs[i].t.After(imgs[j].t) })
 	for i, f := range imgs {
-		expired := maxAgeDays > 0 && now.Sub(f.t) > time.Duration(maxAgeDays)*24*time.Hour
+		expired := maxAgeDays > 0 && now.Sub(f.t) >= time.Duration(maxAgeDays)*24*time.Hour
 		overCount := maxCount > 0 && i >= maxCount
 		if expired || overCount {
 			_ = os.Remove(filepath.Join(s.dir, f.name))
 			_ = os.Remove(filepath.Join(s.dir, f.name+".meta.json"))
+		}
+	}
+
+	// Sweep orphan sidecars: a .meta.json whose image was deleted (by a rule
+	// hit above, a crash between the two removes, or an external delete).
+	// They'd otherwise leak forever since the loop above only lists non-meta
+	// files.
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		n := e.Name()
+		if !strings.HasSuffix(n, ".meta.json") {
+			continue
+		}
+		base := strings.TrimSuffix(n, ".meta.json")
+		if _, err := os.Stat(filepath.Join(s.dir, base)); os.IsNotExist(err) {
+			_ = os.Remove(filepath.Join(s.dir, n))
 		}
 	}
 }

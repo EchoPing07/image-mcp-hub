@@ -707,10 +707,11 @@ function renderSettings() {
         server: { host: hostIn.value.trim(), port: +portIn.value, mcp_token: tokenIn.value, admin_password: pwIn.value },
         storage: { dir: dirIn.value.trim(), max_age_days: +ageIn.value || 0, max_count: +cntIn.value || 0 },
       };
-      await api("/config", { method: "PUT", body: JSON.stringify(body) });
+      const res = await api("/config", { method: "PUT", body: JSON.stringify(body) });
       await loadConfig();
       render();
       toast(t("saved"));
+      if (res && res.restart_required) setTimeout(() => toast(t("settings_hint")), 2600);
     } catch (e) { toast(e.message); }
   });
   actions.appendChild(save);

@@ -2,8 +2,10 @@ package admin
 
 import (
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"sync"
@@ -27,7 +29,9 @@ type Service struct {
 }
 
 func New(cfg *config.Manager, store *storage.Storage, st *stats.Stats) *Service {
-	return &Service{cfg: cfg, store: store, stats: st, sess: map[string]time.Time{}}
+	s := &Service{cfg: cfg, store: store, stats: st, sess: map[string]time.Time{}}
+	go s.sweepSessions()
+	return s
 }
 
 // Routes returns a mux mounted at the given prefix (e.g. "/admin/api/").
@@ -80,6 +84,23 @@ func (s *Service) validSession(id string) bool {
 	return true
 }
 
+// sweepSessions periodically drops expired sessions so dead ids don't leak in
+// memory (validSession only cleans on next access, which may never happen).
+func (s *Service) sweepSessions() {
+	t := time.NewTicker(time.Hour)
+	defer t.Stop()
+	for range t.C {
+		s.mu.Lock()
+		now := time.Now()
+		for id, exp := range s.sess {
+			if now.After(exp) {
+				delete(s.sess, id)
+			}
+		}
+		s.mu.Unlock()
+	}
+}
+
 func (s *Service) newSession() string {
 	b := make([]byte, 32)
 	_, _ = rand.Read(b)
@@ -100,8 +121,27 @@ func writeErr(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
 }
 
+// httpError carries an HTTP status out of a config.Manager.Update closure so
+// the handler can map it back to the right response code.
+type httpError struct {
+	status int
+	msg    string
+}
+
+func (e *httpError) Error() string { return e.msg }
+
+func errStatus(status int, msg string) *httpError { return &httpError{status: status, msg: msg} }
+
 func readJSON(w http.ResponseWriter, r *http.Request, v any) bool {
+	// Cap request bodies to stop an unauthenticated /login (or any admin
+	// endpoint) from OOMing the server with a huge JSON payload.
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	if err := json.NewDecoder(r.Body).Decode(v); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeErr(w, http.StatusRequestEntityTooLarge, "request body too large")
+			return false
+		}
 		writeErr(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return false
 	}
@@ -117,7 +157,7 @@ func (s *Service) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if !readJSON(w, r, &body) {
 		return
 	}
-	if body.Password != s.cfg.Get().Server.AdminPassword {
+	if subtle.ConstantTimeCompare([]byte(body.Password), []byte(s.cfg.Get().Server.AdminPassword)) != 1 {
 		writeErr(w, http.StatusUnauthorized, "wrong password")
 		return
 	}
@@ -170,14 +210,28 @@ func (s *Service) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "invalid port")
 		return
 	}
-	cur := s.cfg.Get()
-	cur.Server = body.Server
-	cur.Storage = body.Storage
-	if err := s.cfg.Reload(cur); err != nil {
+	var restartRequired bool
+	err := s.cfg.Update(func(c *config.Config) error {
+		// port, host and storage.dir are bound at process start; everything
+		// else (token, password, cleanup, models) hot-reloads immediately.
+		restartRequired = c.Server.Host != body.Server.Host ||
+			c.Server.Port != body.Server.Port ||
+			c.Storage.Dir != body.Storage.Dir
+		c.Server = body.Server
+		c.Storage = body.Storage
+		return nil
+	})
+	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, cur)
+	c := s.cfg.Get()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"server":            c.Server,
+		"storage":           c.Storage,
+		"models":            c.Models,
+		"restart_required":  restartRequired,
+	})
 }
 
 // ---- models ----
@@ -195,17 +249,25 @@ func (s *Service) handleCreateModel(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "name must match ^[a-zA-Z][a-zA-Z0-9_]{0,63}$")
 		return
 	}
-	cur := s.cfg.Get()
-	for _, ex := range cur.Models {
-		if ex.Name == m.Name {
-			writeErr(w, http.StatusConflict, "model name already exists")
+	// Validate + mutate under the config write lock so a concurrent create
+	// (or an in-flight NextKey) can't race the uniqueness check or clobber it.
+	err := s.cfg.Update(func(c *config.Config) error {
+		for _, ex := range c.Models {
+			if ex.Name == m.Name {
+				return errStatus(http.StatusConflict, "model name already exists")
+			}
+		}
+		m.KeyIndex = 0
+		m.APIKeys = cleanKeys(m.APIKeys)
+		c.Models = append(c.Models, m)
+		return nil
+	})
+	if err != nil {
+		var he *httpError
+		if errors.As(err, &he) {
+			writeErr(w, he.status, he.msg)
 			return
 		}
-	}
-	m.KeyIndex = 0
-	m.APIKeys = cleanKeys(m.APIKeys)
-	cur.Models = append(cur.Models, m)
-	if err := s.cfg.Reload(cur); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -222,36 +284,42 @@ func (s *Service) handleUpdateModel(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "name must match ^[a-zA-Z][a-zA-Z0-9_]{0,63}$")
 		return
 	}
-	cur := s.cfg.Get()
-	idx := -1
-	for i, ex := range cur.Models {
-		if ex.Name == oldName {
-			idx = i
-			break
-		}
-	}
-	if idx < 0 {
-		writeErr(w, http.StatusNotFound, "model not found")
-		return
-	}
-	// name uniqueness (excluding self)
-	if m.Name != oldName {
-		for i, ex := range cur.Models {
-			if i != idx && ex.Name == m.Name {
-				writeErr(w, http.StatusConflict, "model name already exists")
-				return
+	err := s.cfg.Update(func(c *config.Config) error {
+		idx := -1
+		for i, ex := range c.Models {
+			if ex.Name == oldName {
+				idx = i
+				break
 			}
 		}
-	}
-	m.APIKeys = cleanKeys(m.APIKeys)
-	// preserve rotation cursor, clamped to the new key list
-	if len(m.APIKeys) > 0 {
-		m.KeyIndex = cur.Models[idx].KeyIndex % len(m.APIKeys)
-	} else {
-		m.KeyIndex = 0
-	}
-	cur.Models[idx] = m
-	if err := s.cfg.Reload(cur); err != nil {
+		if idx < 0 {
+			return errStatus(http.StatusNotFound, "model not found")
+		}
+		if m.Name != oldName {
+			for i, ex := range c.Models {
+				if i != idx && ex.Name == m.Name {
+					return errStatus(http.StatusConflict, "model name already exists")
+				}
+			}
+		}
+		m.APIKeys = cleanKeys(m.APIKeys)
+		// Preserve the rotation cursor read from the LIVE config (under the
+		// lock), clamped to the new key list. The old clone-based code read it
+		// from a stale snapshot and clobbered in-flight NextKey rotations.
+		if len(m.APIKeys) > 0 {
+			m.KeyIndex = c.Models[idx].KeyIndex % len(m.APIKeys)
+		} else {
+			m.KeyIndex = 0
+		}
+		c.Models[idx] = m
+		return nil
+	})
+	if err != nil {
+		var he *httpError
+		if errors.As(err, &he) {
+			writeErr(w, he.status, he.msg)
+			return
+		}
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -260,22 +328,33 @@ func (s *Service) handleUpdateModel(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handleDeleteModel(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
-	cur := s.cfg.Get()
-	out := cur.Models[:0]
-	found := false
-	for _, ex := range cur.Models {
-		if ex.Name == name {
-			found = true
-			continue
+	err := s.cfg.Update(func(c *config.Config) error {
+		found := false
+		for _, ex := range c.Models {
+			if ex.Name == name {
+				found = true
+				break
+			}
 		}
-		out = append(out, ex)
-	}
-	if !found {
-		writeErr(w, http.StatusNotFound, "model not found")
-		return
-	}
-	cur.Models = out
-	if err := s.cfg.Reload(cur); err != nil {
+		if !found {
+			return errStatus(http.StatusNotFound, "model not found")
+		}
+		out := c.Models[:0]
+		for _, ex := range c.Models {
+			if ex.Name == name {
+				continue
+			}
+			out = append(out, ex)
+		}
+		c.Models = out
+		return nil
+	})
+	if err != nil {
+		var he *httpError
+		if errors.As(err, &he) {
+			writeErr(w, he.status, he.msg)
+			return
+		}
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}

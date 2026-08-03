@@ -40,7 +40,19 @@ type StatusError struct {
 
 func (e *StatusError) Error() string { return fmt.Sprintf("upstream %d: %s", e.Code, e.Body) }
 
-var client = &http.Client{Timeout: 5 * time.Minute}
+// maxBodyBytes caps how much of an upstream response (the generations JSON
+// envelope) or a downloaded image we buffer in memory, to prevent OOM from a
+// hostile or runaway upstream. 16 MiB is generous for a single image.
+const maxBodyBytes = 16 << 20
+
+var client = &http.Client{
+	Timeout: 5 * time.Minute,
+	Transport: &http.Transport{
+		MaxConnsPerHost:     32,
+		MaxIdleConnsPerHost: 8,
+		IdleConnTimeout:     90 * time.Second,
+	},
+}
 
 // Generate calls baseURL + "/v1/images/generations" with the OpenAI-compatible
 // request body. response_format is never sent: we download url results and
@@ -75,7 +87,7 @@ func Generate(ctx context.Context, baseURL, apiKey string, req GenerateRequest) 
 		return nil, err
 	}
 	defer resp.Body.Close()
-	raw, _ := io.ReadAll(resp.Body)
+	raw, _ := io.ReadAll(http.MaxBytesReader(nil, resp.Body, maxBodyBytes))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, &StatusError{Code: resp.StatusCode, Body: string(raw)}
 	}
@@ -94,7 +106,7 @@ func Generate(ctx context.Context, baseURL, apiKey string, req GenerateRequest) 
 
 	out := &Result{Created: parsed.Created}
 	for _, item := range parsed.Data {
-		img, err := convertItem(ctx, item, req.Params)
+		img, err := convertItem(ctx, item)
 		if err != nil {
 			return nil, fmt.Errorf("process image: %w", err)
 		}
@@ -103,21 +115,15 @@ func Generate(ctx context.Context, baseURL, apiKey string, req GenerateRequest) 
 	return out, nil
 }
 
-func convertItem(ctx context.Context, item map[string]any, params map[string]any) (Image, error) {
+func convertItem(ctx context.Context, item map[string]any) (Image, error) {
 	img := Image{Upstream: item}
-	// ext from output_format param if provided, else from url, else png
-	if of, ok := params["output_format"].(string); ok && of != "" {
-		img.Ext = of
-	}
 	if u, ok := item["url"].(string); ok && u != "" {
-		data, ext, err := download(ctx, u)
+		data, err := download(ctx, u)
 		if err != nil {
 			return img, fmt.Errorf("download %s: %w", u, err)
 		}
 		img.Data = data
-		if img.Ext == "" {
-			img.Ext = ext
-		}
+		img.Ext = extFromBytes(data)
 		return img, nil
 	}
 	if b64, ok := item["b64_json"].(string); ok && b64 != "" {
@@ -126,46 +132,48 @@ func convertItem(ctx context.Context, item map[string]any, params map[string]any
 			return img, fmt.Errorf("decode b64_json: %w", err)
 		}
 		img.Data = data
-		if img.Ext == "" {
-			img.Ext = "png"
-		}
+		img.Ext = extFromBytes(data)
 		return img, nil
 	}
 	return img, fmt.Errorf("image item has neither url nor b64_json")
 }
 
-func download(ctx context.Context, url string) ([]byte, string, error) {
+func download(ctx context.Context, url string) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
 	defer resp.Body.Close()
-	data, err := io.ReadAll(resp.Body)
+	data, err := io.ReadAll(http.MaxBytesReader(nil, resp.Body, maxBodyBytes))
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, "", fmt.Errorf("download status %d", resp.StatusCode)
+		return nil, fmt.Errorf("download status %d", resp.StatusCode)
 	}
-	return data, extFromContentType(resp.Header.Get("Content-Type")), nil
+	return data, nil
 }
 
-func extFromContentType(ct string) string {
-	ct = strings.ToLower(strings.TrimSpace(strings.Split(ct, ";")[0]))
-	switch ct {
-	case "image/png":
+// extFromBytes picks a file extension from the image's magic bytes, ignoring
+// whatever output_format the client requested. This guarantees the saved file
+// extension matches the actual bytes — a client asking for output_format=webp
+// must not cause png bytes to be saved as .webp and later served with the
+// wrong Content-Type. output_format is still forwarded upstream untouched.
+func extFromBytes(data []byte) string {
+	switch {
+	case len(data) >= 8 && bytes.HasPrefix(data, []byte("\x89PNG\r\n\x1a\n")):
 		return "png"
-	case "image/jpeg", "image/jpg":
+	case len(data) >= 3 && data[0] == 0xFF && data[1] == 0xD8 && data[2] == 0xFF:
 		return "jpg"
-	case "image/webp":
+	case len(data) >= 12 && bytes.HasPrefix(data, []byte("RIFF")) && bytes.HasPrefix(data[8:12], []byte("WEBP")):
 		return "webp"
-	case "image/gif":
+	case len(data) >= 6 && (bytes.HasPrefix(data, []byte("GIF87a")) || bytes.HasPrefix(data, []byte("GIF89a"))):
 		return "gif"
 	default:
-		return "png"
+		return "png" // unknown — fall back to png, the most common browser image
 	}
 }

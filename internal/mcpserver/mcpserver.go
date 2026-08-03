@@ -2,6 +2,7 @@ package mcpserver
 
 import (
 	"context"
+	"crypto/subtle"
 	"fmt"
 	"net/http"
 	"strings"
@@ -64,7 +65,16 @@ func (s *Service) Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		token := s.cfg.Get().Server.McpToken
 		auth := r.Header.Get("Authorization")
-		if auth == "" || auth != "Bearer "+token {
+		// RFC 7235: the auth-scheme is case-insensitive ("bearer" is valid).
+		// Compare the token in constant time to avoid a timing side-channel on
+		// what is often a public-facing endpoint.
+		const prefix = "Bearer "
+		if len(auth) < len(prefix) || !strings.EqualFold(auth[:len(prefix)], prefix) {
+			w.Header().Set("WWW-Authenticate", "Bearer")
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		if subtle.ConstantTimeCompare([]byte(auth[len(prefix):]), []byte(token)) != 1 {
 			w.Header().Set("WWW-Authenticate", "Bearer")
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
@@ -159,8 +169,9 @@ func (s *Service) callTool(ctx context.Context, req mcp.CallToolRequest) (*mcp.C
 		base = v
 	}
 	var urls []string
+	var savedFiles []string // for rollback if a later save fails
 	for _, img := range res.Images {
-		_, urlPath, err := s.store.Save(img.Data, img.Ext, storage.Meta{
+		filename, urlPath, err := s.store.Save(img.Data, img.Ext, storage.Meta{
 			Model:    name,
 			ModelID:  model.ModelID,
 			Prompt:   prompt,
@@ -168,9 +179,16 @@ func (s *Service) callTool(ctx context.Context, req mcp.CallToolRequest) (*mcp.C
 			Upstream: img.Upstream,
 		})
 		if err != nil {
+			// Roll back any images already written this call so we don't leave
+			// orphan files the agent was never told about (they'd still get
+			// cleaned eventually, but shouldn't exist on a reported failure).
+			for _, f := range savedFiles {
+				_ = s.store.Delete(f)
+			}
 			record(false, 0, "save image: "+err.Error())
 			return mcp.NewToolResultError(fmt.Sprintf("save image: %v", err)), nil
 		}
+		savedFiles = append(savedFiles, filename)
 		if base != "" {
 			urls = append(urls, base+urlPath)
 		} else {
