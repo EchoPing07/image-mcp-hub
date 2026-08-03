@@ -2,7 +2,7 @@ name: release-build
 
 on:
   release:
-    types: [created, published]
+    types: [published]
   workflow_dispatch:
 
 permissions:
