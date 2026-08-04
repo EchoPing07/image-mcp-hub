@@ -133,17 +133,28 @@ func TestCallTool_FullFlow(t *testing.T) {
 		t.Fatalf("saved image bytes mismatch")
 	}
 
-	// stats recorded: 1 success, 1 image
+	// stats recorded: 1 success, 1 image, keyed by the stable model ID (not
+	// model_id, which may collide across channels), with model_id as the label.
 	snap := st.Snapshot()
 	if snap.TotalRequests != 1 || snap.TotalSuccess != 1 || snap.TotalFailures != 0 || snap.TotalImages != 1 {
 		t.Fatalf("stats totals: %+v", snap)
 	}
-	ms := snap.Models["mock_img"]
+	entryID := got.Models[0].ID
+	if entryID == "" {
+		t.Fatal("model has no ID after Reload (applyDefaults should backfill one)")
+	}
+	ms := snap.Models[entryID]
 	if ms == nil || ms.Requests != 1 || ms.Success != 1 {
 		t.Fatalf("per-model stats: %+v", ms)
 	}
-	if len(snap.Recent) != 1 || !snap.Recent[0].OK || snap.Recent[0].Model != "mock_img" {
+	if ms.Label != "mock-1" {
+		t.Fatalf("per-model label = %q, want mock-1", ms.Label)
+	}
+	if len(snap.Recent) != 1 || !snap.Recent[0].OK || snap.Recent[0].Model != entryID {
 		t.Fatalf("recent calls: %+v", snap.Recent)
+	}
+	if snap.Recent[0].Label != "mock-1" {
+		t.Fatalf("recent label = %q, want mock-1", snap.Recent[0].Label)
 	}
 }
 
@@ -181,5 +192,23 @@ func TestCallTool_URLBranch(t *testing.T) {
 	}
 	if res.IsError {
 		t.Fatalf("expected success, got: %+v", res.Content)
+	}
+}
+
+// TestBuildTool_PrefixedWithModelID verifies the tool description always leads
+// with the real model id so the agent knows which upstream model a tool maps
+// to, regardless of the user-chosen alias (tool name).
+func TestBuildTool_PrefixedWithModelID(t *testing.T) {
+	tool := buildTool(config.Model{Name: "alias", ModelID: "wan2.7-image", Description: "draw something"})
+	if !strings.HasPrefix(tool.Description, "(model: wan2.7-image)") {
+		t.Fatalf("description missing model_id prefix: %q", tool.Description)
+	}
+	if !strings.Contains(tool.Description, "draw something") {
+		t.Fatalf("user description dropped: %q", tool.Description)
+	}
+	// Empty description still gets the prefix + default text.
+	tool2 := buildTool(config.Model{Name: "alias", ModelID: "m-id", Description: ""})
+	if !strings.HasPrefix(tool2.Description, "(model: m-id)") {
+		t.Fatalf("empty-desc tool missing prefix: %q", tool2.Description)
 	}
 }

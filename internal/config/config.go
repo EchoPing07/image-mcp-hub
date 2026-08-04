@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"sync"
+
+	"github.com/google/uuid"
 )
 
 // Server holds HTTP server settings.
@@ -26,7 +28,20 @@ type Storage struct {
 }
 
 // Model is one configured image-generation model = one MCP tool.
+//
+// Identity is layered to decouple what the user may edit from what the rest
+// of the system keys on:
+//   - ID        — a UUID assigned at creation, never user-editable, never
+//                 reused. The stable+unique key for stats and any internal
+//                 cross-referencing. Survives tool renames and model_id
+//                 collisions across channels.
+//   - ModelID   — the real upstream model id, locked after creation. Forwarded
+//                 to the upstream API; used as the human-readable label in the
+//                 dashboard. NOT unique (two channels may serve the same model).
+//   - Name      — the MCP tool name (alias), freely editable, unique across
+//                 configured models (enforced by the admin API).
 type Model struct {
+	ID          string   `json:"id"`
 	Name        string   `json:"name"`
 	ModelID     string   `json:"model_id"`
 	BaseURL     string   `json:"base_url"`
@@ -42,7 +57,7 @@ type Config struct {
 	Models  []Model `json:"models"`
 }
 
-var nameRe = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_]{0,63}$`)
+var nameRe = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9._-]{0,63}$`)
 
 // ValidName reports whether alias is a valid MCP tool name.
 func ValidName(name string) bool { return nameRe.MatchString(name) }
@@ -107,6 +122,13 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Models == nil {
 		c.Models = []Model{}
+	}
+	// Backfill a stable ID for models from older configs that predate the ID
+	// field. The ID is the stats key, so every model must have one.
+	for i := range c.Models {
+		if c.Models[i].ID == "" {
+			c.Models[i].ID = uuid.NewString()
+		}
 	}
 }
 

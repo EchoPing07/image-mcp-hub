@@ -81,7 +81,7 @@ func (s *Storage) List() ([]Item, error) {
 	if err != nil {
 		return nil, err
 	}
-	var items []Item
+	items := make([]Item, 0)
 	for _, e := range entries {
 		if e.IsDir() {
 			continue

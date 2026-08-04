@@ -17,6 +17,9 @@ const I18N = {
     theme_l: "浅色模式", theme_d: "深色模式",
     theme_light: "切换到浅色模式", theme_dark: "切换到深色模式", logout: "退出登录",
     login_placeholder: "管理密码", login_btn: "登 录",
+    login_subtitle: "管理后台", login_loading: "登录中…",
+    login_reveal: "显示密码", login_hide: "隐藏密码",
+    login_hint: "输入管理密码以继续",
     err_password: "密码错误",
     refresh: "刷新",
     dash_title: "统计",
@@ -28,7 +31,7 @@ const I18N = {
     fail_top: "失败原因 Top",
     dash_empty: "暂无统计数据，调用 MCP 工具后这里会展示图表",
     chart_tip: "{date} · {n} 次请求",
-    col_model: "模型", col_requests: "请求", col_success: "成功", col_failures: "失败",
+    col_model: "模型 ID", col_requests: "请求", col_success: "成功", col_failures: "失败",
     col_rate: "成功率", col_avg: "平均耗时", col_images: "出图", col_last: "最近调用",
     ok: "成功", fail: "失败",
     models_title: "模型",
@@ -39,8 +42,9 @@ const I18N = {
     del_model_msg: "确定删除模型「{name}」吗？此操作不可恢复。",
     saved: "已保存", deleted: "已删除",
     modal_add: "添加模型", modal_edit: "编辑模型",
-    tool_name: "工具名称", name_hint: "需匹配 ^[a-zA-Z][a-zA-Z0-9_]{0,63}$，作为 MCP 工具名使用。",
-    model_id: "模型 ID", base_url: "上游地址", api_keys: "API Keys",
+    tool_name: "工具名称", name_hint: "需匹配 ^[a-zA-Z][a-zA-Z0-9._-]{0,63}$，作为 MCP 工具名使用，可随时修改。",
+    model_id: "模型 ID", model_id_hint: "创建后锁定，不可修改；作为统计与图片元数据的稳定标识。",
+    base_url: "上游地址", api_keys: "API Keys",
     keys_hint: "每次调用按列表轮换（round-robin），游标持久化，重启后接续。",
     description: "工具描述", tpl_placeholder: "选择描述模板…",
     cancel: "取消", save: "保存", add_model: "添加模型",
@@ -68,6 +72,9 @@ const I18N = {
     theme_l: "Light", theme_d: "Dark",
     theme_light: "Switch to light mode", theme_dark: "Switch to dark mode", logout: "Log out",
     login_placeholder: "Password", login_btn: "Log in",
+    login_subtitle: "Admin console", login_loading: "Signing in…",
+    login_reveal: "Show password", login_hide: "Hide password",
+    login_hint: "Enter the admin password to continue",
     err_password: "Wrong password",
     refresh: "Refresh",
     dash_title: "Statistics",
@@ -79,7 +86,7 @@ const I18N = {
     fail_top: "Top failures",
     dash_empty: "No statistics yet. Charts appear here once MCP tools are called.",
     chart_tip: "{date} · {n} requests",
-    col_model: "Model", col_requests: "Requests", col_success: "OK", col_failures: "Fail",
+    col_model: "Model ID", col_requests: "Requests", col_success: "OK", col_failures: "Fail",
     col_rate: "Rate", col_avg: "Avg time", col_images: "Images", col_last: "Last call",
     ok: "OK", fail: "Fail",
     models_title: "Models",
@@ -90,8 +97,9 @@ const I18N = {
     del_model_msg: "Delete model \"{name}\"? This cannot be undone.",
     saved: "Saved", deleted: "Deleted",
     modal_add: "Add model", modal_edit: "Edit model",
-    tool_name: "Tool name", name_hint: "Must match ^[a-zA-Z][a-zA-Z0-9_]{0,63}$. Used as the MCP tool name.",
-    model_id: "Model ID", base_url: "Base URL", api_keys: "API keys",
+    tool_name: "Tool name", name_hint: "Must match ^[a-zA-Z][a-zA-Z0-9._-]{0,63}$. Used as the MCP tool name; freely editable.",
+    model_id: "Model ID", model_id_hint: "Locked after creation. Stable identity for stats and image metadata.",
+    base_url: "Base URL", api_keys: "API keys",
     keys_hint: "Rotated round-robin per call; cursor persisted across restarts.",
     description: "Description", tpl_placeholder: "Apply template…",
     cancel: "Cancel", save: "Save", add_model: "Add model",
@@ -163,6 +171,8 @@ const ICONS = {
   trash: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>',
   refresh: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>',
   close: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>',
+  eye: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg>',
+  eyeOff: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>',
 };
 
 const icon = (name) => el("span", { class: "ic", html: ICONS[name] || "" });
@@ -282,19 +292,80 @@ function render() {
 
 function renderLogin() {
   const wrap = el("div", { class: "login-wrap" });
+
+  // theme + language available before auth (top-right)
+  const tools = el("div", { class: "login-tools" });
+  const langBtn = el("button", { class: "ic-btn", type: "button", title: lang === "zh" ? "English" : "中文", "aria-label": lang === "zh" ? "English" : "中文" }, [icon("globe")]);
+  langBtn.addEventListener("click", () => {
+    lang = lang === "zh" ? "en" : "zh";
+    localStorage.setItem(LANG_KEY, lang);
+    render();
+  });
+  const themeBtn = el("button", { class: "ic-btn", type: "button", title: theme === "dark" ? t("theme_light") : t("theme_dark"), "aria-label": theme === "dark" ? t("theme_light") : t("theme_dark") }, [icon(theme === "dark" ? "sun" : "moon")]);
+  themeBtn.addEventListener("click", toggleTheme);
+  tools.appendChild(langBtn);
+  tools.appendChild(themeBtn);
+  wrap.appendChild(tools);
+
   const card = el("div", { class: "login-card" });
-  const input = el("input", { type: "password", placeholder: t("login_placeholder"), autofocus: "true" });
-  input.addEventListener("keydown", (e) => { if (e.key === "Enter") doLogin(input.value); });
-  card.appendChild(input);
-  input.focus();
-  const btn = el("button", { class: "btn primary login-btn" }, [t("login_btn")]);
-  btn.addEventListener("click", () => doLogin(input.value));
+  card.appendChild(el("div", { class: "login-mark" }));
+  card.appendChild(el("h1", { class: "login-title" }, ["image-mcp-hub"]));
+  card.appendChild(el("div", { class: "login-rule" }));
+  card.appendChild(el("p", { class: "login-sub" }, [t("login_subtitle")]));
+
+  // password field with reveal toggle
+  const field = el("div", { class: "login-field" });
+  const input = el("input", {
+    type: "password", placeholder: t("login_placeholder"),
+    autocomplete: "current-password", autofocus: "true",
+    "aria-label": t("login_placeholder"),
+  });
+  let revealed = false;
+  const reveal = el("button", { class: "login-reveal", type: "button", tabindex: "-1", title: t("login_reveal"), "aria-label": t("login_reveal"), "aria-pressed": "false" }, [el("span", { class: "ic", html: ICONS.eye })]);
+  reveal.addEventListener("click", () => {
+    revealed = !revealed;
+    input.type = revealed ? "text" : "password";
+    reveal.setAttribute("aria-pressed", String(revealed));
+    reveal.title = revealed ? t("login_hide") : t("login_reveal");
+    reveal.setAttribute("aria-label", revealed ? t("login_hide") : t("login_reveal"));
+    reveal.querySelector(".ic").innerHTML = revealed ? ICONS.eyeOff : ICONS.eye;
+    input.focus();
+  });
+  field.appendChild(input);
+  field.appendChild(reveal);
+
+  const err = el("p", { class: "login-err", role: "alert" });
+  const btn = el("button", { class: "btn primary login-btn", type: "submit" }, [t("login_btn")]);
+
+  const submit = () => {
+    const v = input.value.trim();
+    if (!v) { input.classList.add("invalid"); input.focus(); return; }
+    doLogin(v, { btn, input, err });
+  };
+  input.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); submit(); } });
+  input.addEventListener("input", () => { input.classList.remove("invalid"); err.classList.remove("show"); });
+  btn.addEventListener("click", submit);
+
+  card.appendChild(field);
+  card.appendChild(err);
   card.appendChild(btn);
+  card.appendChild(el("p", { class: "login-hint" }, [t("login_hint")]));
   wrap.appendChild(card);
+  requestAnimationFrame(() => input.focus());
   return wrap;
 }
 
-async function doLogin(pw) {
+async function doLogin(pw, ui) {
+  const { btn, input, err } = ui || {};
+  if (btn) {
+    btn.disabled = true;
+    btn.dataset.label = btn.textContent;
+    btn.textContent = "";
+    btn.appendChild(el("span", { class: "login-spin" }));
+    btn.appendChild(document.createTextNode(t("login_loading")));
+  }
+  if (input) input.classList.remove("invalid");
+  if (err) { err.textContent = ""; err.classList.remove("show"); }
   try {
     await api("/login", { method: "POST", body: JSON.stringify({ password: pw }) });
     state.authed = true;
@@ -302,6 +373,9 @@ async function doLogin(pw) {
     await loadStats();
     render();
   } catch (e) {
+    if (btn) { btn.disabled = false; btn.textContent = t("login_btn"); }
+    if (input) { input.classList.add("invalid"); input.focus(); input.select(); }
+    if (err) { err.textContent = t("err_password"); err.classList.add("show"); }
     toast(t("err_password"));
   }
 }
@@ -606,7 +680,8 @@ function openModelModal(m) {
 
   const nameIn = field(grid, t("tool_name"), el("input", { value: data.name, placeholder: "my-image-model", autocomplete: "off" }));
   grid.appendChild(el("div", { class: "hint field-full" }, [t("name_hint")]));
-  field(grid, t("model_id"), el("input", { value: data.model_id, placeholder: "gpt-image-1", autocomplete: "off" }));
+  field(grid, t("model_id"), el("input", { value: data.model_id, placeholder: "gpt-image-1", autocomplete: "off", disabled: !isNew }));
+  if (!isNew) grid.appendChild(el("div", { class: "hint field-full" }, [t("model_id_hint")]));
   field(grid, t("base_url"), el("input", { value: data.base_url, placeholder: "https://api.openai.com/v1", autocomplete: "off" }));
   const keysTa = el("textarea", { placeholder: "sk-…" });
   keysTa.value = data.api_keys;
@@ -731,7 +806,7 @@ function renderImages() {
   wrap.appendChild(pageHead(t("images_title"), null, refresh));
 
   const section = el("div", { class: "section" });
-  if (!state.images.length) {
+  if (!state.images || !state.images.length) {
     section.appendChild(el("div", { class: "empty" }, [t("images_empty")]));
     wrap.appendChild(section);
     return wrap;
@@ -814,7 +889,7 @@ async function loadAll() { await Promise.all([loadModels(), loadConfig()]); }
 async function loadModels() { state.models = await api("/models"); }
 async function loadConfig() { state.config = await api("/config"); }
 async function loadImages() {
-  try { state.images = await api("/images"); if (state.tab === "images") render(); } catch (e) { toast(e.message); }
+  try { state.images = (await api("/images")) || []; if (state.tab === "images") render(); } catch (e) { toast(e.message); }
 }
 async function loadStats() {
   try {

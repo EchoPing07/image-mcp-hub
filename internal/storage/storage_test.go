@@ -77,3 +77,20 @@ func TestClean_DeletesSidecar(t *testing.T) {
 		t.Fatalf("sidecar should be deleted with image")
 	}
 }
+
+// TestList_EmptyReturnsSlice guards the gallery bug: an empty storage dir must
+// return a non-nil slice so the JSON serializes to [] (not null), otherwise
+// the frontend's state.images.length throws on an empty gallery.
+func TestList_EmptyReturnsSlice(t *testing.T) {
+	s, _ := New(t.TempDir())
+	items, err := s.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if items == nil {
+		t.Fatal("List() returned nil for empty dir; want non-nil slice (marshals to [] not null)")
+	}
+	if len(items) != 0 {
+		t.Fatalf("expected 0 items, got %d", len(items))
+	}
+}

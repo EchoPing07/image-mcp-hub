@@ -77,3 +77,47 @@ func TestNoopSave(t *testing.T) {
 		t.Fatal("expected parse error for corrupt stats.json")
 	}
 }
+
+// TestMigrate_MergesAndSetsLabel covers the v2→v3 upgrade path: stats
+// previously keyed by model_id are relocated to the stable config Model.ID.
+// Counters merge if the target exists, the display label is preserved, and
+// recent entries are retagged. For a v2 on-disk entry with no label, the
+// fallback label is the old key (which IS the model_id in v2).
+func TestMigrate_MergesAndSetsLabel(t *testing.T) {
+	s, _ := New(t.TempDir())
+	s.Record(CallRecord{Model: "oldkey", Label: "model-x", OK: true, Images: 2})
+	s.Record(CallRecord{Model: "newkey", Label: "model-x", OK: false, Error: "e"})
+
+	s.Migrate("oldkey", "newkey")
+	snap := s.Snapshot()
+	if _, ok := snap.Models["oldkey"]; ok {
+		t.Fatal("old key still present after migrate")
+	}
+	ms := snap.Models["newkey"]
+	if ms == nil || ms.Requests != 2 || ms.Success != 1 || ms.Failures != 1 || ms.Images != 2 {
+		t.Fatalf("merged counters: %+v", ms)
+	}
+	if ms.Label != "model-x" {
+		t.Fatalf("label not preserved on merge: %q", ms.Label)
+	}
+	for _, r := range snap.Recent {
+		if r.Model == "oldkey" {
+			t.Fatal("recent still tagged with old key")
+	}
+	}
+
+	// v2 on-disk entry has no Label; Migrate(model_id, ID) must fall back to
+	// using the old key (the model_id) as the label so the dashboard can still
+	// render a human-readable name.
+	s2, _ := New(t.TempDir())
+	s2.models["m-id"] = &ModelStats{Requests: 3} // no Label, simulates v2 disk
+	s2.dirty = true
+	s2.Migrate("m-id", "entry-uuid")
+	ms2 := s2.Snapshot().Models["entry-uuid"]
+	if ms2 == nil || ms2.Requests != 3 {
+		t.Fatalf("v2 migrate counters: %+v", ms2)
+	}
+	if ms2.Label != "m-id" {
+		t.Fatalf("v2 migrate label fallback = %q, want m-id", ms2.Label)
+	}
+}

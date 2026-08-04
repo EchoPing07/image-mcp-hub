@@ -19,21 +19,28 @@ const (
 )
 
 // CallRecord is one finished tool call, reported by the MCP layer.
+//
+// Model is the stable config Model.ID used as the stats map key (unique even
+// when two channels share the same upstream model_id). Label is the model_id,
+// carried through so deleted models can still be displayed after prune.
 type CallRecord struct {
-	Model      string
+	Model      string // config Model.ID
+	Label      string // model_id, for display
 	OK         bool
 	DurationMS int64
 	Images     int
 	Error      string
 }
 
-// ModelStats aggregates counters for a single model name.
+// ModelStats aggregates counters for a single configured model (keyed by ID).
+// Label holds the model_id captured at record time for display after deletion.
 type ModelStats struct {
-	Requests int64 `json:"requests"`
-	Success  int64 `json:"success"`
-	Failures int64 `json:"failures"`
-	Images   int64 `json:"images"`
-	TotalMS  int64 `json:"total_ms"`
+	Label    string `json:"label"`
+	Requests int64  `json:"requests"`
+	Success  int64  `json:"success"`
+	Failures int64  `json:"failures"`
+	Images   int64  `json:"images"`
+	TotalMS  int64  `json:"total_ms"`
 }
 
 // DayStat is one calendar day of counters (keyed by "2006-01-02").
@@ -45,9 +52,11 @@ type DayStat struct {
 }
 
 // RecentCall is one entry in the recent-activity list (newest first).
+// Model is the config Model.ID (stats key); Label is the model_id for display.
 type RecentCall struct {
 	Time       time.Time `json:"time"`
 	Model      string    `json:"model"`
+	Label      string    `json:"label"`
 	OK         bool      `json:"ok"`
 	DurationMS int64     `json:"duration_ms"`
 	Images     int       `json:"images"`
@@ -127,8 +136,11 @@ func (s *Stats) Record(rec CallRecord) {
 
 	ms := s.models[rec.Model]
 	if ms == nil {
-		ms = &ModelStats{}
+		ms = &ModelStats{Label: rec.Label}
 		s.models[rec.Model] = ms
+	}
+	if ms.Label == "" && rec.Label != "" {
+		ms.Label = rec.Label // backfill migrated entries on first new record
 	}
 	ms.Requests++
 	ms.TotalMS += rec.DurationMS
@@ -153,6 +165,7 @@ func (s *Stats) Record(rec CallRecord) {
 	rc := RecentCall{
 		Time:       time.Now(),
 		Model:      rec.Model,
+		Label:      rec.Label,
 		OK:         rec.OK,
 		DurationMS: rec.DurationMS,
 		Images:     rec.Images,
@@ -263,4 +276,56 @@ func (s *Stats) PruneModels(keep []string) {
 	if changed {
 		s.dirty = true
 	}
+}
+
+// Migrate renames a stats key from old to new. If new already exists, the old
+// counters are merged into it. RecentCall.Model fields equal to old are
+// rewritten too. The display label is preserved/migrated so a deleted model
+// still shows a human-readable model_id after prune. It is a no-op when old is
+// empty, equal to new, or absent.
+//
+// Used once at startup to move stats onto the stable config Model.ID key:
+// stats previously keyed by model_id (and, before that, by tool name) are
+// relocated to the corresponding model's ID so historical data survives the
+// keying change instead of being pruned by PruneModels.
+func (s *Stats) Migrate(old, new string) {
+	if old == "" || old == new {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	src, ok := s.models[old]
+	if !ok {
+		return
+	}
+	// Fallback label: prefer the source's stored label; otherwise use `old`
+	// (for stats previously keyed by model_id, `old` IS the model_id, which is
+	// exactly the display label we want).
+	fallback := src.Label
+	if fallback == "" {
+		fallback = old
+	}
+	if dst := s.models[new]; dst != nil {
+		dst.Requests += src.Requests
+		dst.Success += src.Success
+		dst.Failures += src.Failures
+		dst.Images += src.Images
+		dst.TotalMS += src.TotalMS
+		if dst.Label == "" {
+			dst.Label = fallback
+		}
+	} else {
+		src.Label = fallback
+		s.models[new] = src
+	}
+	delete(s.models, old)
+	for i := range s.recent {
+		if s.recent[i].Model == old {
+			s.recent[i].Model = new
+			if s.recent[i].Label == "" {
+			s.recent[i].Label = fallback
+			}
+		}
+	}
+	s.dirty = true
 }

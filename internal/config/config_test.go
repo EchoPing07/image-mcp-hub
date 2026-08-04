@@ -9,13 +9,13 @@ import (
 )
 
 func TestValidName(t *testing.T) {
-	good := []string{"a", "img", "wan_image", "A1", "x" + repeat("_", 62)}
+	good := []string{"a", "img", "wan_image", "wan2.7", "dash-x", "A1", "x" + repeat("_", 62)}
 	for _, n := range good {
 		if !ValidName(n) {
 			t.Errorf("ValidName(%q) = false, want true", n)
 		}
 	}
-	bad := []string{"", "1abc", "_x", "has space", "dash-x", "中", "a" + repeat("b", 64)}
+	bad := []string{"", "1abc", "_x", ".abc", "has space", "中", "a" + repeat("b", 64)}
 	for _, n := range bad {
 		if ValidName(n) {
 			t.Errorf("ValidName(%q) = true, want false", n)
@@ -179,5 +179,36 @@ func TestConfigFilePermissions(t *testing.T) {
 	}
 	if info.Mode().Perm() != 0o600 {
 		t.Fatalf("config file mode = %o, want 0600", info.Mode().Perm())
+	}
+}
+
+// TestApplyDefaults_BackfillsModelID verifies the v3 identity upgrade: older
+// configs predate the ID field, so applyDefaults assigns a UUID to every model
+// missing one on load/reload. Explicit IDs are preserved untouched.
+func TestApplyDefaults_BackfillsModelID(t *testing.T) {
+	mgr, _ := Load(filepath.Join(t.TempDir(), "config.json"))
+	mgr.Reload(&Config{
+		Server:  Server{Host: "127.0.0.1", Port: 12300, McpToken: "t", AdminPassword: "p"},
+		Storage: Storage{Dir: "./data/images"},
+		Models: []Model{
+			{Name: "a", ModelID: "m-a", BaseURL: "http://x", APIKeys: []string{"k"}},
+			{Name: "b", ModelID: "m-b", BaseURL: "http://x", APIKeys: []string{"k"}},
+		},
+	})
+	got := mgr.Get()
+	if got.Models[0].ID == "" || got.Models[1].ID == "" {
+		t.Fatal("applyDefaults did not backfill model IDs")
+	}
+	if got.Models[0].ID == got.Models[1].ID {
+		t.Fatal("backfilled IDs must be unique")
+	}
+	// An explicit ID is preserved, not overwritten.
+	mgr.Reload(&Config{
+		Server:  Server{Host: "127.0.0.1", Port: 12300, McpToken: "t", AdminPassword: "p"},
+		Storage: Storage{Dir: "./data/images"},
+		Models:  []Model{{ID: "fixed", Name: "c", ModelID: "m-c", BaseURL: "http://x", APIKeys: []string{"k"}}},
+	})
+	if got2 := mgr.Get(); got2.Models[0].ID != "fixed" {
+		t.Fatalf("explicit ID overwritten: got %q", got2.Models[0].ID)
 	}
 }

@@ -340,18 +340,89 @@ html, body { overflow-x: hidden; }
 
 /* ---------- login ---------- */
 
-.login-wrap { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px; }
+.login-wrap {
+  position: relative; min-height: 100vh;
+  display: flex; align-items: center; justify-content: center; padding: 20px;
+}
+
+/* theme + language controls, available before auth */
+.login-tools {
+  position: absolute; top: 18px; right: 18px;
+  display: flex; gap: 6px; z-index: 2;
+}
+.ic-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 34px; height: 34px; flex: none;
+  border: 1px solid var(--line); background: var(--surface); color: var(--fg-2);
+  border-radius: 8px; transition: background 0.14s ease, color 0.14s ease, border-color 0.14s ease;
+}
+.ic-btn:hover { background: var(--hover); color: var(--fg); border-color: var(--line-strong); }
+.ic-btn .ic { width: 16px; height: 16px; }
+
 .login-card {
-  width: 360px; max-width: 100%; background: var(--surface); border: 1px solid var(--line);
-  border-radius: 12px; padding: 40px 34px 34px;
+  width: 360px; max-width: 100%; background: var(--surface);
+  border: 1px solid var(--line); border-radius: 14px;
+  padding: 44px 34px 32px; text-align: center;
+  box-shadow: var(--shadow-lg);
+  animation: login-rise 0.34s cubic-bezier(0.2, 0.7, 0.2, 1) both;
 }
+@keyframes login-rise {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: none; }
+}
+
+/* brand mark — echoes the sidebar red square */
+.login-mark {
+  width: 30px; height: 30px; margin: 0 auto 16px;
+  border-radius: 7px; background: var(--accent);
+  box-shadow: 0 2px 6px -1px var(--accent-soft);
+}
+.login-title {
+  margin: 0;
+  font-family: "Noto Serif SC", "Source Han Serif SC", "Songti SC", STSong,
+    Georgia, "Times New Roman", serif;
+  font-size: 22px; font-weight: 600; letter-spacing: 0.01em;
+  color: var(--fg);
+}
+.login-rule { width: 34px; height: 1px; background: var(--accent); margin: 13px auto 11px; opacity: 0.85; }
+.login-sub { margin: 0 0 26px; font-size: 12.5px; color: var(--fg-3); letter-spacing: 0.08em; }
+
+.login-field { position: relative; margin-bottom: 10px; }
 .login-card input {
-  width: 100%; padding: 11px 13px; background: var(--bg); color: var(--fg);
-  border: 1px solid var(--line-strong); border-radius: 8px; margin-bottom: 14px;
-  transition: border-color 0.14s ease;
+  width: 100%; padding: 12px 44px 12px 13px; background: var(--bg); color: var(--fg);
+  border: 1px solid var(--line-strong); border-radius: 8px;
+  transition: border-color 0.14s ease, box-shadow 0.14s ease;
 }
-.login-card input:focus { outline: none; border-color: var(--accent); }
+.login-card input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.login-card input.invalid { border-color: var(--danger); box-shadow: 0 0 0 3px var(--danger-soft); }
+.login-reveal {
+  position: absolute; top: 0; right: 0; bottom: 0; width: 40px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: none; background: transparent; color: var(--fg-3);
+  border-radius: 0 7px 7px 0; transition: color 0.14s ease;
+}
+.login-reveal:hover { color: var(--fg); }
+.login-reveal .ic { width: 16px; height: 16px; }
+
+.login-err {
+  min-height: 18px; margin: 0 0 10px; font-size: 12px; color: var(--danger);
+  opacity: 0; transform: translateY(-2px); transition: opacity 0.16s ease, transform 0.16s ease;
+}
+.login-err.show { opacity: 1; transform: none; }
+
 .login-btn { width: 100%; padding: 11px; font-size: 13.5px; letter-spacing: 0.25em; }
+.login-btn:disabled { opacity: 0.8; cursor: progress; }
+
+/* inline spinner */
+.login-spin {
+  width: 14px; height: 14px; flex: none;
+  border: 2px solid currentColor; border-top-color: transparent;
+  border-radius: 50%; opacity: 0.85;
+  animation: login-spin 0.7s linear infinite;
+}
+@keyframes login-spin { to { transform: rotate(360deg); } }
+
+.login-hint { margin: 16px 0 0; font-size: 11.5px; color: var(--fg-3); }
 
 /* ---------- images ---------- */
 
@@ -482,7 +553,8 @@ html, body { overflow-x: hidden; }
   .form-actions { flex-direction: column-reverse; }
   .form-actions .btn { width: 100%; }
   .grid { padding: 12px; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); }
-  .login-card { padding: 34px 26px 28px; }
+  .login-card { padding: 38px 24px 26px; }
+  .login-tools { top: 14px; right: 14px; }
   .modal-body { padding: 16px 14px; }
   .modal-head { padding: 13px 14px; }
   .meta-view .row { grid-template-columns: 88px 1fr; }

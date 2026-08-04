@@ -42,6 +42,17 @@ func main() {
 		log.Fatalf("init stats: %v", err)
 	}
 
+	// One-time migration onto the stable config Model.ID key. Stats used to be
+	// keyed by tool name (v1), then by model_id (v2); both are non-unique or
+	// mutable, so they were replaced by the per-entry UUID ID. Relocate each
+	// model's counters from both legacy keys to its ID so historical data
+	// survives the upgrade instead of being pruned by the next PruneModels
+	// sweep. model_id is migrated first (more recent keying) then name.
+	for _, m := range cfg.Models {
+		st.Migrate(m.ModelID, m.ID)
+		st.Migrate(m.Name, m.ID)
+	}
+
 	mcpSvc := mcpserver.New(cfgMgr, store, st)
 	adminSvc := admin.New(cfgMgr, store, st)
 
@@ -53,11 +64,11 @@ func main() {
 		for range t.C {
 			c := cfgMgr.Get()
 			store.Clean(c.Storage.MaxAgeDays, c.Storage.MaxCount)
-			names := make([]string, 0, len(c.Models))
+			ids := make([]string, 0, len(c.Models))
 			for _, m := range c.Models {
-				names = append(names, m.Name)
+				ids = append(ids, m.ID)
 			}
-			st.PruneModels(names)
+			st.PruneModels(ids)
 		}
 	}()
 

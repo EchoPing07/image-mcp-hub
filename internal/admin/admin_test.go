@@ -208,3 +208,125 @@ func TestPutConfig_RestartRequired(t *testing.T) {
 		t.Fatalf("token-only change: restart_required = %v, want false", got["restart_required"])
 	}
 }
+
+// TestUpdateModel_LocksModelID verifies model_id is immutable after creation:
+// it is the stable identity keying request statistics, so a rename must not
+// orphan historical data. The tool name (alias) stays freely editable.
+func TestUpdateModel_LocksModelID(t *testing.T) {
+	svc, _ := newTestService(t)
+	srv := adminServer(t, svc)
+	defer srv.Close()
+	c := jarClient()
+	do(c, http.MethodPost, srv.URL+"/admin/api/login", map[string]string{"password": "pw"})
+
+	resp, body := do(c, http.MethodPost, srv.URL+"/admin/api/models", map[string]any{
+		"name": "m", "model_id": "original", "base_url": "http://x", "api_keys": []string{"k"}, "description": "d",
+	})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create: %d", resp.StatusCode)
+	}
+	var created config.Model
+	if err := json.Unmarshal(body, &created); err != nil {
+		t.Fatal(err)
+	}
+	if created.ID == "" {
+		t.Fatal("create did not assign a model ID")
+	}
+
+	// Rename the tool AND attempt to change model_id and ID.
+	resp, body = do(c, http.MethodPut, srv.URL+"/admin/api/models/m", map[string]any{
+		"id": "forged", "name": "renamed", "model_id": "changed", "base_url": "http://x", "api_keys": []string{"k"}, "description": "d",
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("update: %d %s", resp.StatusCode, body)
+	}
+	var got config.Model
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.ModelID != "original" {
+		t.Fatalf("model_id changed: got %q, want %q (locked after creation)", got.ModelID, "original")
+	}
+	if got.ID != created.ID {
+		t.Fatalf("ID changed: got %q, want %q (locked after creation)", got.ID, created.ID)
+	}
+	if got.Name != "renamed" {
+		t.Fatalf("name not updated: got %q", got.Name)
+	}
+
+	// Confirm via the list endpoint too.
+	resp, body = do(c, http.MethodGet, srv.URL+"/admin/api/models", nil)
+	var list []config.Model
+	if err := json.Unmarshal(body, &list); err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 || list[0].ModelID != "original" || list[0].Name != "renamed" || list[0].ID != created.ID {
+		t.Fatalf("list after rename: %+v", list)
+	}
+}
+
+// TestStats_MultiChannelSameModelID is the core fix for the identity question:
+// two configured models may share the same upstream model_id (different
+// channels/base_urls). Stats must stay SEPARATE (keyed by the stable per-entry
+// ID), and the dashboard must disambiguate them by appending the tool name so
+// neither channel's counts are lost into the other.
+func TestStats_MultiChannelSameModelID(t *testing.T) {
+	svc, mgr := newTestService(t)
+	srv := adminServer(t, svc)
+	defer srv.Close()
+	c := jarClient()
+	do(c, http.MethodPost, srv.URL+"/admin/api/login", map[string]string{"password": "pw"})
+
+	// Two channels for the same upstream model_id, different tool names.
+	for _, body := range []map[string]any{
+		{"name": "wan_a", "model_id": "wan2.7", "base_url": "http://a", "api_keys": []string{"k"}, "description": "d"},
+		{"name": "wan_b", "model_id": "wan2.7", "base_url": "http://b", "api_keys": []string{"k"}, "description": "d"},
+	} {
+		resp, _ := do(c, http.MethodPost, srv.URL+"/admin/api/models", body)
+		if resp.StatusCode != http.StatusCreated {
+			t.Fatalf("create %s: %d", body["name"], resp.StatusCode)
+		}
+	}
+
+	cfg := mgr.Get()
+	if len(cfg.Models) != 2 || cfg.Models[0].ID == "" || cfg.Models[1].ID == "" || cfg.Models[0].ID == cfg.Models[1].ID {
+		t.Fatalf("expected two distinct non-empty IDs: %+v", cfg.Models)
+	}
+	idA, idB := cfg.Models[0].ID, cfg.Models[1].ID
+
+	// One successful call on channel A, one failure on channel B — same model_id.
+	svc.stats.Record(stats.CallRecord{Model: idA, Label: "wan2.7", OK: true, Images: 1})
+	svc.stats.Record(stats.CallRecord{Model: idB, Label: "wan2.7", OK: false, Error: "boom"})
+
+	// Dashboard snapshot comes through the display transform.
+	resp, body := do(c, http.MethodGet, srv.URL+"/admin/api/stats", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("stats: %d", resp.StatusCode)
+	}
+	type statModel struct {
+		Label    string `json:"label"`
+		Requests int64  `json:"requests"`
+		Success  int64  `json:"success"`
+		Failures int64  `json:"failures"`
+		Images   int64  `json:"images"`
+		TotalMS  int64  `json:"total_ms"`
+	}
+	var snap struct {
+		TotalRequests int64                `json:"total_requests"`
+		Models        map[string]statModel `json:"models"`
+	}
+	if err := json.Unmarshal(body, &snap); err != nil {
+		t.Fatal(err)
+	}
+	if snap.TotalRequests != 2 {
+		t.Fatalf("total requests = %d, want 2", snap.TotalRequests)
+	}
+	// Same model_id, two channels: rows must be disambiguated with the name.
+	a, b := snap.Models["wan2.7 · wan_a"], snap.Models["wan2.7 · wan_b"]
+	if a.Requests != 1 || a.Success != 1 {
+		t.Fatalf("channel A stats wrong: %+v", a)
+	}
+	if b.Requests != 1 || b.Failures != 1 {
+		t.Fatalf("channel B stats wrong: %+v", b)
+	}
+}

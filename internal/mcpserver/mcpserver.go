@@ -96,6 +96,9 @@ func buildTool(m config.Model) mcp.Tool {
 	if desc == "" {
 		desc = "Generate an image from a text prompt and return a local image URL."
 	}
+	// Prepend the real model id so the agent always knows which upstream model
+	// a tool maps to, even though the tool name is just a user-chosen alias.
+	desc = fmt.Sprintf("(model: %s) %s", m.ModelID, desc)
 	return mcp.NewTool(m.Name,
 		mcp.WithDescription(desc),
 		mcp.WithString("prompt", mcp.Required(), mcp.Description("Text prompt describing the image to generate")),
@@ -111,9 +114,16 @@ func buildTool(m config.Model) mcp.Tool {
 func (s *Service) callTool(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	start := time.Now()
 	name := req.Params.Name
+	// Stats are keyed by the stable config Model.ID (unique even when two
+	// channels share a model_id). For the unknown-tool path there is no model,
+	// so fall back to the tool name as the key — that phantom entry is pruned
+	// on the next PruneModels sweep. Label carries model_id for display.
+	entryID := name
+	label := name
 	record := func(ok bool, images int, errMsg string) {
 		s.stats.Record(stats.CallRecord{
-			Model:      name,
+			Model:      entryID,
+			Label:      label,
 			OK:         ok,
 			DurationMS: time.Since(start).Milliseconds(),
 			Images:     images,
@@ -133,6 +143,8 @@ func (s *Service) callTool(ctx context.Context, req mcp.CallToolRequest) (*mcp.C
 		record(false, 0, "unknown tool: "+name)
 		return mcp.NewToolResultError("unknown tool: " + name), nil
 	}
+	entryID = model.ID
+	label = model.ModelID
 
 	args := req.GetArguments()
 	prompt, _ := args["prompt"].(string)

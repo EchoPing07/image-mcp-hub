@@ -14,6 +14,7 @@ import (
 	"github.com/EchoPing07/image-mcp-hub/internal/config"
 	"github.com/EchoPing07/image-mcp-hub/internal/stats"
 	"github.com/EchoPing07/image-mcp-hub/internal/storage"
+	"github.com/google/uuid"
 )
 
 const sessionCookie = "ims_session"
@@ -187,7 +188,102 @@ func (s *Service) handleSession(w http.ResponseWriter, r *http.Request) {
 // ---- stats ----
 
 func (s *Service) handleStats(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, s.stats.Snapshot())
+	writeJSON(w, http.StatusOK, s.displayStats(s.stats.Snapshot()))
+}
+
+// displayStats reshapes a stats.Snapshot so the dashboard sees human-readable
+// model_id labels as map keys and in Recent.Model, instead of the internal
+// config Model.ID keys. Labels come from the live config; entries no longer in
+// the config fall back to the label captured at record time. When two
+// configured models share the same model_id (multi-channel setup), each label
+// is disambiguated with its tool name so the rows stay distinguishable.
+//
+// The output keeps the same JSON shape the frontend expects (in particular the
+// `model` field on recent entries and string map keys), so the SPA needs no
+// changes.
+func (s *Service) displayStats(snap *stats.Snapshot) any {
+	cfg := s.cfg.Get()
+	labelOf := map[string]string{} // entry ID -> model_id
+	nameOf := map[string]string{}  // entry ID -> tool name
+	dup := map[string]int{}        // model_id occurrence count among live models
+	for _, m := range cfg.Models {
+		labelOf[m.ID] = m.ModelID
+		nameOf[m.ID] = m.Name
+		dup[m.ModelID]++
+	}
+	resolve := func(entryID, storedLabel string) string {
+		if label, ok := labelOf[entryID]; ok {
+			if dup[label] > 1 {
+				return label + " · " + nameOf[entryID]
+			}
+			return label
+		}
+		if storedLabel != "" {
+			return storedLabel
+		}
+		return entryID
+	}
+
+	type dispModel struct {
+		Label    string `json:"label"`
+		Requests int64  `json:"requests"`
+		Success  int64  `json:"success"`
+		Failures int64  `json:"failures"`
+		Images   int64  `json:"images"`
+		TotalMS  int64  `json:"total_ms"`
+	}
+	type dispRecent struct {
+		Time       time.Time `json:"time"`
+		Model      string    `json:"model"`
+		OK         bool      `json:"ok"`
+		DurationMS int64     `json:"duration_ms"`
+		Images     int       `json:"images"`
+		Error      string    `json:"error,omitempty"`
+	}
+
+	out := struct {
+		TotalRequests int64                 `json:"total_requests"`
+		TotalSuccess  int64                 `json:"total_success"`
+		TotalFailures int64                 `json:"total_failures"`
+		TotalImages   int64                 `json:"total_images"`
+		TotalMS       int64                 `json:"total_ms"`
+		Since         time.Time             `json:"since"`
+		Models        map[string]*dispModel `json:"models"`
+		Daily         []stats.DayStat       `json:"daily"`
+		Recent        []dispRecent          `json:"recent"`
+	}{
+		TotalRequests: snap.TotalRequests,
+		TotalSuccess:  snap.TotalSuccess,
+		TotalFailures: snap.TotalFailures,
+		TotalImages:   snap.TotalImages,
+		TotalMS:       snap.TotalMS,
+		Since:         snap.Since,
+		Models:        map[string]*dispModel{},
+		Daily:         snap.Daily,
+	}
+	for entryID, ms := range snap.Models {
+		label := resolve(entryID, ms.Label)
+		if ex := out.Models[label]; ex != nil {
+			ex.Requests += ms.Requests
+			ex.Success += ms.Success
+			ex.Failures += ms.Failures
+			ex.Images += ms.Images
+			ex.TotalMS += ms.TotalMS
+		} else {
+			out.Models[label] = &dispModel{
+				Label: label, Requests: ms.Requests, Success: ms.Success,
+				Failures: ms.Failures, Images: ms.Images, TotalMS: ms.TotalMS,
+			}
+		}
+	}
+	out.Recent = make([]dispRecent, 0, len(snap.Recent))
+	for _, r := range snap.Recent {
+		out.Recent = append(out.Recent, dispRecent{
+			Time: r.Time, Model: resolve(r.Model, r.Label),
+			OK: r.OK, DurationMS: r.DurationMS, Images: r.Images, Error: r.Error,
+		})
+	}
+	return out
 }
 
 // ---- config ----
@@ -246,7 +342,7 @@ func (s *Service) handleCreateModel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !config.ValidName(m.Name) {
-		writeErr(w, http.StatusBadRequest, "name must match ^[a-zA-Z][a-zA-Z0-9_]{0,63}$")
+		writeErr(w, http.StatusBadRequest, "name must match ^[a-zA-Z][a-zA-Z0-9._-]{0,63}$")
 		return
 	}
 	// Validate + mutate under the config write lock so a concurrent create
@@ -259,6 +355,9 @@ func (s *Service) handleCreateModel(w http.ResponseWriter, r *http.Request) {
 		}
 		m.KeyIndex = 0
 		m.APIKeys = cleanKeys(m.APIKeys)
+		// Assign the stable internal ID at creation. It is the stats key and never
+		// user-editable afterwards.
+		m.ID = uuid.NewString()
 		c.Models = append(c.Models, m)
 		return nil
 	})
@@ -281,7 +380,7 @@ func (s *Service) handleUpdateModel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !config.ValidName(m.Name) {
-		writeErr(w, http.StatusBadRequest, "name must match ^[a-zA-Z][a-zA-Z0-9_]{0,63}$")
+		writeErr(w, http.StatusBadRequest, "name must match ^[a-zA-Z][a-zA-Z0-9._-]{0,63}$")
 		return
 	}
 	err := s.cfg.Update(func(c *config.Config) error {
@@ -311,6 +410,12 @@ func (s *Service) handleUpdateModel(w http.ResponseWriter, r *http.Request) {
 		} else {
 			m.KeyIndex = 0
 		}
+		// model_id is immutable after creation: it is the human-readable label used
+		// in the dashboard and image metadata, so changing it would orphan the
+		// displayed identity. The tool name (alias) stays freely editable. The ID
+		// is the true stable stats key and is likewise preserved untouched.
+		m.ModelID = c.Models[idx].ModelID
+		m.ID = c.Models[idx].ID
 		c.Models[idx] = m
 		return nil
 	})
