@@ -195,6 +195,8 @@ const el = (tag, props = {}, children = []) => {
     else if (k === "html") n.innerHTML = v;
     else if (k.startsWith("on")) n.addEventListener(k.slice(2).toLowerCase(), v);
     else if (k === "style" && typeof v === "object") Object.assign(n.style, v);
+    else if (v === false) continue;              // boolean attr off (e.g. disabled:false) — must NOT set
+    else if (v === true) n.setAttribute(k, "");   // boolean attr on — presence enables it
     else n.setAttribute(k, v);
   }
   for (const c of [].concat(children)) {
